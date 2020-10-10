@@ -2,530 +2,340 @@
 
 namespace Maksa988\WayForPay;
 
-use InvalidArgumentException;
+use Illuminate\Contracts\Support\Arrayable;
+use Maksa988\WayForPay\Collection\ProductCollection;
+use Maksa988\WayForPay\Domain\Card;
+use Maksa988\WayForPay\Domain\Languages;
+use Maksa988\WayForPay\Domain\PaymentSystems;
+use WayForPay\SDK\Credential\AccountSecretCredential;
+use WayForPay\SDK\Credential\AccountSecretTestCredential;
+use WayForPay\SDK\Domain\Client;
+use WayForPay\SDK\Domain\MerchantTypes;
+use WayForPay\SDK\Form\PurchaseForm;
+use WayForPay\SDK\Handler\ServiceUrlHandler;
+use WayForPay\SDK\Response\ChargeResponse;
+use WayForPay\SDK\Response\InvoiceResponse;
+use WayForPay\SDK\Wizard\ChargeWizard;
+use WayForPay\SDK\Wizard\CheckWizard;
+use WayForPay\SDK\Wizard\Complete3DSWizard;
+use WayForPay\SDK\Wizard\InvoiceWizard;
+use WayForPay\SDK\Wizard\PurchaseWizard;
+use WayForPay\SDK\Wizard\RefundWizard;
 
 class WayForPay
 {
-    const PURCHASE_URL      = 'https://secure.wayforpay.com/pay';
-    const API_URL           = 'https://api.wayforpay.com/api';
-    const WIDGET_URL        = 'https://secure.wayforpay.com/server/pay-widget.js';
-    const FIELDS_DELIMITER  = ';';
-    const API_VERSION       = 1;
-    const DEFAULT_CHARSET   = 'utf8';
+    /**
+     * @var bool
+     */
+    protected $testMode = false;
 
-    const MODE_PURCHASE       = 'PURCHASE';
-    const MODE_SETTLE         = 'SETTLE';
-    const MODE_CHARGE         = 'CHARGE';
-    const MODE_REFUND         = 'REFUND';
-    const MODE_CHECK_STATUS   = 'CHECK_STATUS';
-    const MODE_P2P_CREDIT     = 'P2P_CREDIT';
-    const MODE_CREATE_INVOICE = 'CREATE_INVOICE';
-    const MODE_P2_PHONE       = 'P2_PHONE';
+    /**
+     * @var AccountSecretTestCredential
+     */
+    private $credentials;
 
-    private $_merchant_account;
-    private $_merchant_password;
-    private $_action;
-    private $_params;
-    private $_charset = self::DEFAULT_CHARSET;
+    /**
+     * @var string
+     */
+    private $merchantDomain;
+    /**
+     * @var string
+     */
+    private $merchantAccount;
+
+    /**
+     * @var string
+     */
+    private $merchantPassword;
 
     /**
      * Init
      */
     public function __construct()
     {
-        $this->_merchant_account = config('wayforpay.merchantAccount');
-        $this->_merchant_password = config('wayforpay.merchantSecretKey');
+        $this->merchantAccount = config('wayforpay.merchantAccount');
+        $this->merchantPassword = config('wayforpay.merchantSecretKey');
+
+        $this->setMerchantDomain(config('wayforpay.merchantDomain'));
+
+        $this->testMode = config('wayforpay.testMode', true);
+
+        $this->initCredentials();
     }
 
     /**
-     * MODE_SETTLE
-     *
-     * @param $fields
-     * @return mixed
+     * @return $this
      */
-    public function settle($fields)
+    public function initCredentials()
     {
-        $this->_prepare(self::MODE_SETTLE, $fields);
+        if($this->testMode) {
+            return $this->setCredentials(new AccountSecretTestCredential());
+        }
 
-        return $this->_query();
+        return $this->setCredentials(new AccountSecretCredential($this->merchantAccount, $this->merchantPassword));
     }
 
     /**
-     * MODE_CHARGE
-     *
-     * @param $fields
-     * @return mixed
+     * @param AccountSecretCredential $credential
+     * @return $this
      */
-    public function charge($fields)
+    public function setCredentials(AccountSecretCredential $credential)
     {
-        $this->_prepare(self::MODE_CHARGE, $fields);
+        $this->credentials = $credential;
 
-        return $this->_query();
+        return $this;
     }
 
     /**
-     * MODE_REFUND
-     *
-     * @param $fields
-     * @return mixed
+     * @return AccountSecretTestCredential
      */
-    public function refund($fields)
+    public function getCredentials()
     {
-        $this->_prepare(self::MODE_REFUND, $fields);
-
-        return $this->_query();
+        return $this->credentials;
     }
 
     /**
-     * MODE_CHECK_STATUS
-     *
-     * @param $fields
-     * @return mixed
+     * @param string $domain
+     * @return $this
      */
-    public function checkStatus($fields)
+    public function setMerchantDomain($domain)
     {
-        $this->_prepare(self::MODE_CHECK_STATUS, $fields);
+        $this->merchantDomain = $domain;
 
-        return $this->_query();
+        return $this;
     }
 
     /**
-     * MODE_P2P_CREDIT
-     *
-     * @param $fields
-     * @return mixed
-     */
-    public function account2card($fields)
-    {
-        $this->_prepare(self::MODE_P2P_CREDIT, $fields);
-
-        return $this->_query();
-    }
-
-    /**
-     * MODE_P2P_CREDIT
-     *
-     * @param $fields
-     * @return mixed
-     */
-    public function createInvoice($fields)
-    {
-        $this->_prepare(self::MODE_CREATE_INVOICE, $fields);
-
-        return $this->_query();
-    }
-
-    /**
-     * MODE_P2P_CREDIT
-     *
-     * @param $fields
-     * @return mixed
-     */
-    public function account2phone($fields)
-    {
-        $this->_prepare(self::MODE_P2_PHONE, $fields);
-
-        return $this->_query();
-    }
-
-    /**
-     * MODE_PURCHASE
-     * Generate html form
-     *
-     * @param $fields
      * @return string
      */
-    public function buildForm($fields)
+    public function getMerchantDomain()
     {
-        $this->_prepare(self::MODE_PURCHASE, $fields);
-
-        $form = sprintf('<form method="POST" action="%s" accept-charset="utf-8">', self::PURCHASE_URL);
-
-        foreach ($this->_params as $key => $value) {
-            if (is_array($value)) {
-                foreach ($value as $field) {
-                    $form .= sprintf('<input type="hidden" name="%s" value="%s" />', $key . '[]', htmlspecialchars($field));
-                }
-            } else {
-                $form .= sprintf('<input type="hidden" name="%s" value="%s" />', $key, htmlspecialchars($value));
-            }
-        }
-
-        $form .= '<input type="submit" value="Submit purchase form"></form>';
-
-        return $form;
+        return $this->merchantDomain;
     }
 
     /**
-     * MODE_PURCHASE
-     * If GET redirect is used to redirect to purchase form, i.e.
-     * https://secure.wayforpay.com/pay/get?merchantAccount=test_merch_n1&merchantDomainName=domain.ua&merchantSignature=c6d08855677ec6beca68e292b2c3c6ae&orderReference=RG3656-1430373125&orderDate=1430373125&amount=0.16&currency=UAH&productName=Saturn%20BUE%201.2&productPrice=0.16&productCount=1&language=RU
+     * @param string $order_id
+     * @param float $amount
+     * @param Client $client
+     * @param ProductCollection $products
+     * @param Card $card
+     * @param string $currency
+     * @param \DateTime $date
+     * @param null|int $holdTimeout
+     * @param null|string $serviceUrl
+     * @param null|string $socialUri
+     * @param string $transactionType
+     * @param string $transactionSecureType
+     * @return ChargeResponse
      *
-     * @param $fields
-     * @return string
+     * @throws \Exception
      */
-    public function generatePurchaseUrl($fields)
+    public function charge(
+        $order_id,
+        $amount,
+        Client $client,
+        ProductCollection $products,
+        Card $card,
+        $currency = "USD",
+        \DateTime $date = null,
+        $holdTimeout = null,
+        $serviceUrl = null,
+        $socialUri = null,
+        $transactionType = MerchantTypes::TRANSACTION_AUTO,
+        $transactionSecureType = MerchantTypes::TRANSACTION_SECURE_AUTO)
     {
-        $this->_prepare(self::MODE_PURCHASE, $fields);
+        $wizard = ChargeWizard::get($this->getCredentials())
+            ->setOrderReference($order_id)
+            ->setAmount($amount)
+            ->setCurrency($currency)
+            ->setOrderDate($date ?? (new \DateTime()))
+            ->setMerchantDomainName($this->getMerchantDomain())
+            ->setClient($client)
+            ->setProducts($products)
+            ->setMerchantTransactionType($transactionType)
+            ->setMerchantTransactionSecureType($transactionSecureType)
+            ->setServiceUrl($serviceUrl)
+            ->setHoldTimeout($holdTimeout)
+            ->setSocialUri($socialUri);
 
-        return self::PURCHASE_URL.'/get?'.http_build_query($this->_params);
-    }
-
-    /**
-     * Return signature hash
-     *
-     * @param $action
-     * @param $fields
-     * @return mixed
-     */
-    public function createSignature($action, $fields)
-    {
-        $this->_prepare($action, $fields);
-
-        return $this->_buildSignature();
-    }
-
-    /**
-     * @param $action
-     * @param array $params
-     * @throws InvalidArgumentException
-     */
-    private function _prepare($action, array $params)
-    {
-        $this->_action = $action;
-
-        if(empty($params)){
-            throw new InvalidArgumentException('Arguments must be not empty');
+        if($card->isToken()) {
+            $wizard->setCardToken($card->getCardToken());
+        } else {
+            $wizard->setCard($card->getCard());
         }
 
-        $this->_params = $params;
-        $this->_params['transactionType'] = $this->_action;
-        $this->_params['merchantAccount'] = $this->_merchant_account;
-        $this->_params['merchantSignature'] = $this->_buildSignature();
-
-        if ($this->_action !== self::MODE_PURCHASE) $this->_params['apiVersion'] = self::API_VERSION;
-
-        $this->_checkFields();
-
+        return $wizard->getRequest()->send();
     }
 
     /**
-     * Check required fields
-     *
-     * @param $fields
-     * @return bool
-     * @throws InvalidArgumentException
+     * @param string $order_id
+     * @return \WayForPay\SDK\Response\CheckResponse
      */
-    private function _checkFields()
+    public function check($order_id)
     {
-        $required = $this->_getRequiredFields();
-        $error = array();
-
-        foreach ($required as $item) {
-            if (array_key_exists($item, $this->_params)) {
-                if (empty($this->_params[$item])) {
-                    $error[] = $item;
-                }
-            } else {
-                $error[] = $item;
-            }
-        }
-
-        if (!empty($error)) {
-            throw new InvalidArgumentException('Missed required field(s): ' . implode(', ', $error) . '.');
-        }
-
-        return true;
+        return CheckWizard::get($this->getCredentials())
+            ->setOrderReference($order_id)
+            ->getRequest()
+            ->send();
     }
 
     /**
-     * Generate signature hash
-     *
-     * @param $fields
-     * @return string
-     * @throws InvalidArgumentException
+     * @param string $authTicket
+     * @param string $d3Md
+     * @param string $d3Pares
+     * @return \WayForPay\SDK\Response\Complete3DSResponse
      */
-    private function _buildSignature()
+    public function complete3ds($authTicket, $d3Md, $d3Pares)
     {
-        $signFields = $this->_getFieldsNameForSignature();
-        $data = array();
-        $error = array();
-
-        foreach ($signFields as $item) {
-            if (array_key_exists($item, $this->_params)) {
-                $value = $this->_params[$item];
-                if (is_array($value)) {
-                    $data[] = implode(self::FIELDS_DELIMITER, $value);
-                } else {
-                    $data[] = (string) $value;
-                }
-            } else {
-                $error[] = $item;
-            }
-        }
-
-        if ( $this->_charset != self::DEFAULT_CHARSET) {
-            foreach($data as $key => $value) {
-                $data[$key] = iconv($this->_charset, self::DEFAULT_CHARSET, $data[$key]);
-            }
-        }
-
-        if (!empty($error)) {
-            throw new InvalidArgumentException('Missed signature field(s): ' . implode(', ', $error) . '.');
-        }
-
-        return hash_hmac('md5', implode(self::FIELDS_DELIMITER, $data), $this->_merchant_password);
+        return Complete3DSWizard::get($this->getCredentials())
+            ->setAuthTicket($authTicket)
+            ->setD3Md($d3Md)
+            ->setD3Pares($d3Pares)
+            ->getRequest()
+            ->send();
     }
 
     /**
-     * Request method
-     * @return mixed
+     * @param string $order_id
+     * @param float $amount
+     * @param Client $client
+     * @param ProductCollection $products
+     * @param string $currency
+     * @param \DateTime|null $date
+     * @param null|string $serviceUrl
+     * @param PaymentSystems|null $paymentSystems
+     * @param null|int $holdTimeout
+     * @param null|int $orderTimeout
+     * @param null|int $orderLifetime
+     * @return InvoiceResponse
+     * @throws \Exception
      */
-    private function _query()
+    public function createInvoice(
+        $order_id,
+        $amount,
+        Client $client,
+        ProductCollection $products,
+        $currency = "USD",
+        \DateTime $date = null,
+        $serviceUrl = null,
+        PaymentSystems $paymentSystems = null,
+        $holdTimeout = null,
+        $orderTimeout = null,
+        $orderLifetime = null)
     {
-        $fields = json_encode($this->_params);
+        $wizard = InvoiceWizard::get($this->getCredentials())
+            ->setOrderReference($order_id)
+            ->setAmount($amount)
+            ->setCurrency($currency)
+            ->setMerchantDomainName($this->getMerchantDomain())
+            ->setClient($client)
+            ->setProducts($products)
+            ->setServiceUrl($serviceUrl)
+            ->setOrderDate($date ?? (new \DateTime()))
+            ->setHoldTimeout($holdTimeout)
+            ->setOrderTimeout($orderTimeout)
+            ->setOrderLifetime($orderLifetime);
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, self::API_URL);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/json;charset=utf-8'));
-        curl_setopt($ch, CURLOPT_POST, 1);
-        curl_setopt($ch, CURLOPT_POSTFIELDS,$fields);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER,1);
-        $response = curl_exec($ch);
-        curl_close($ch);
-
-        return json_decode($response, true);
-    }
-
-
-    /**
-     * Signature fields
-     *
-     * @return array
-     * @throws InvalidArgumentException
-     */
-    private function _getFieldsNameForSignature()
-    {
-        $purchaseFieldsAlias = array(
-            'merchantAccount',
-            'merchantDomainName',
-            'orderReference',
-            'orderDate',
-            'amount',
-            'currency',
-            'productName',
-            'productCount',
-            'productPrice'
-        );
-
-        switch ($this->_action) {
-            case 'PURCHASE':
-                return $purchaseFieldsAlias;
-                break;
-            case 'REFUND':
-                return array(
-                    'merchantAccount',
-                    'orderReference',
-                    'amount',
-                    'currency'
-                );
-            case 'CHECK_STATUS':
-                return array(
-                    'merchantAccount',
-                    'orderReference'
-                );
-                break;
-            case 'CHARGE':
-                return $purchaseFieldsAlias;
-                break;
-            case 'SETTLE':
-                return array(
-                    'merchantAccount',
-                    'orderReference',
-                    'amount',
-                    'currency'
-                );
-                break;
-            case self::MODE_P2P_CREDIT:
-                return array(
-                    'merchantAccount',
-                    'orderReference',
-                    'amount',
-                    'currency',
-                    'cardBeneficiary',
-                    'rec2Token',
-                );
-                break;
-            case self::MODE_CREATE_INVOICE:
-                return $purchaseFieldsAlias;
-                break;
-            case self::MODE_P2_PHONE:
-                return array(
-                    'merchantAccount',
-                    'orderReference',
-                    'amount',
-                    'currency',
-                    'phone',
-                );
-                break;
-            default:
-                throw new InvalidArgumentException('Unknown transaction type: '.$this->_action);
+        if($paymentSystems) {
+            $wizard->setPaymentSystems($paymentSystems);
         }
+
+        return $wizard->getRequest()->send();
     }
 
     /**
-     * Required fields
-     *
-     * @return array
+     * @param string $order_id
+     * @param float $amount
+     * @param Client $client
+     * @param ProductCollection $products
+     * @param string $currency
+     * @param \DateTime|null $date
+     * @param string $language
+     * @param null|string $orderNo
+     * @param null|string $returnUrl
+     * @param null|string $serviceUrl
+     * @param null|string $socialUri
+     * @param string $transactionType
+     * @param string $transactionSecureType
+     * @param null|int $holdTimeout
+     * @param null|int $orderTimeout
+     * @param null|int $orderLifetime
+     * @return PurchaseForm
+     * @throws \Exception
      */
-    private function _getRequiredFields()
+    public function purchase(
+        $order_id,
+        $amount,
+        Client $client,
+        ProductCollection $products,
+        $currency = "USD",
+        \DateTime $date = null,
+        $language = Languages::AUTO,
+        $orderNo = null,
+        $returnUrl = null,
+        $serviceUrl = null,
+        $socialUri = null,
+        $transactionType = MerchantTypes::TRANSACTION_AUTO,
+        $transactionSecureType = MerchantTypes::TRANSACTION_SECURE_AUTO,
+        $holdTimeout = null,
+        $orderTimeout = null,
+        $orderLifetime = null)
     {
-        switch ($this->_action) {
-            case 'PURCHASE':
-                return array(
-                    'merchantAccount',
-                    'merchantDomainName',
-                    'merchantTransactionSecureType',
-                    'orderReference',
-                    'orderDate',
-                    'amount',
-                    'currency',
-                    'productName',
-                    'productCount',
-                    'productPrice'
-                );
-            case 'SETTLE':
-                return array(
-                    'transactionType',
-                    'merchantAccount',
-                    'orderReference',
-                    'amount',
-                    'currency',
-                    'apiVersion'
-                );
-            case 'CHARGE':
-                $required = array(
-                    'transactionType',
-                    'merchantAccount',
-                    'merchantDomainName',
-                    'orderReference',
-                    'apiVersion',
-                    'orderDate',
-                    'amount',
-                    'currency',
-                    'productName',
-                    'productCount',
-                    'productPrice',
-                    'clientFirstName',
-                    'clientLastName',
-                    'clientEmail',
-                    'clientPhone',
-                    'clientCountry',
-                    'clientIpAddress'
-                );
-
-                $additional = !empty($this->_params['recToken']) ?
-                    array('recToken') :
-                    array('card', 'expMonth', 'expYear', 'cardCvv', 'cardHolder');
-
-                return array_merge($required, $additional);
-            case 'REFUND':
-                return array(
-                    'transactionType',
-                    'merchantAccount',
-                    'orderReference',
-                    'amount',
-                    'currency',
-                    'comment',
-                    'apiVersion'
-                );
-            case 'CHECK_STATUS':
-                return array(
-                    'transactionType',
-                    'merchantAccount',
-                    'orderReference',
-                    'apiVersion'
-                );
-            case self::MODE_P2P_CREDIT:
-                return array(
-                    'transactionType',
-                    'merchantAccount',
-                    'orderReference',
-                    'amount',
-                    'currency',
-                    'cardBeneficiary',
-                    'merchantSignature',
-                );
-            case self::MODE_CREATE_INVOICE:
-                return array(
-                    'transactionType',
-                    'merchantAccount',
-                    'merchantDomainName',
-                    'orderReference',
-                    'amount',
-                    'currency',
-                    'productName',
-                    'productCount',
-                    'productPrice',
-                );
-            case self::MODE_P2_PHONE:
-                return array(
-                    'merchantAccount',
-                    'orderReference',
-                    'orderDate',
-                    'currency',
-                    'amount',
-                    'phone',
-                    'apiVersion',
-                );
-                break;
-            default:
-                throw new InvalidArgumentException('Unknown transaction type');
-        }
+        return PurchaseWizard::get($this->getCredentials())
+            ->setOrderReference($order_id)
+            ->setAmount($amount)
+            ->setCurrency($currency)
+            ->setOrderDate($date ?? (new \DateTime()))
+            ->setMerchantDomainName($this->getMerchantDomain())
+            ->setClient($client)
+            ->setProducts($products)
+            ->setMerchantTransactionType($transactionType)
+            ->setMerchantTransactionSecureType($transactionSecureType)
+            ->setReturnUrl($returnUrl)
+            ->setServiceUrl($serviceUrl)
+            ->setHoldTimeout($holdTimeout)
+            ->setSocialUri($socialUri)
+            ->setOrderTimeout($orderTimeout)
+            ->setOrderLifetime($orderLifetime)
+            ->setOrderNo($orderNo)
+            ->setLanguage($language)
+            ->getForm();
     }
 
     /**
-     * @param array $fields Widget(https://wiki.wayforpay.com/pages/viewpage.action?pageId=852091)
-     * @param null $callbackFunction JavaScript callback function called on widget response
-     * @return string
+     * @param string $order_id
+     * @param float $amount
+     * @param string $currency
+     * @param null|string $comment
+     * @return \WayForPay\SDK\Response\RufundResponse
      */
-    public function buildWidgetButton(array $fields, $callbackFunction = null)
+    public function refund($order_id, $amount, $currency = "USD", $comment = null)
     {
-        $this->_prepare(self::MODE_PURCHASE, $fields);
-
-        $button = '<script id="widget-wfp-script" language="javascript" type="text/javascript" src="'. self::WIDGET_URL .'"></script>
-        <script type="text/javascript">
-            var wayforpay = new Wayforpay();
-            var pay = function () {
-            wayforpay.run(' . json_encode($this->_params) . ');
-            }
-            window.addEventListener("message", '. ($callbackFunction ? $callbackFunction : "receiveMessage").');
-            function receiveMessage(event)
-            {
-                if(
-                    event.data == "WfpWidgetEventClose" ||      //при закрытии виджета пользователем
-                    event.data == "WfpWidgetEventApproved" ||   //при успешном завершении операции
-                    event.data == "WfpWidgetEventDeclined" ||   //при неуспешном завершении
-                    event.data == "WfpWidgetEventPending")      // транзакция на обработке
-                {
-                    console.log(event.data);
-                }
-            }
-        </script>
-        <button type="button" onclick="pay();">Оплатить</button>';
-
-        return $button;
+        return RefundWizard::get($this->getCredentials())
+            ->setOrderReference($order_id)
+            ->setAmount($amount)
+            ->setCurrency($currency)
+            ->setComment($comment)
+            ->getRequest()
+            ->send();
     }
 
     /**
-     * @param array $fields
-     * @return \Illuminate\Http\JsonResponse
+     * @param array|Arrayable $request
+     * @param \Closure $callback
+     * @return string|\WayForPay\SDK\Domain\TransactionService
+     * @throws \Exception
      */
-    public function buildWidgetData(array $fields)
+    public function handleServiceUrl($request, \Closure $callback)
     {
-        $this->_prepare(self::MODE_PURCHASE, $fields);
+        $handler = new ServiceUrlHandler($this->getCredentials());
 
-        return response()->json(['data' => $this->_params]);
+        $request = ($request instanceof Arrayable) ? $request->toArray() : (array) $request;
+
+        $response = $handler->parseRequestFromArray($request);
+
+        return $callback($response->getTransaction(), function () use ($handler, $response) {
+            return $handler->getSuccessResponse($response->getTransaction());
+        });
     }
 }

@@ -27,7 +27,7 @@ class WayForPayServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__.'/../config/wayforpay.php', 'wayforpay');
 
-        $this->app->singleton('unitpay', function () {
+        $this->app->singleton('wayforpay', function () {
             return $this->app->make(WayForPay::class);
         });
 
