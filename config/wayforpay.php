@@ -2,9 +2,14 @@
 
 return [
     /*
+     * Test mode for using test credentials
+     */
+    'testMode' => env("WAYFORPAY_TEST", true),
+
+    /*
      * Merchant domain
      */
-    'merchantDomain' => env('WAYFORPAY_DOMAIN', null),
+    'merchantDomain' => env('WAYFORPAY_DOMAIN', 'test.shop'),
 
     /*
      * Merchant Account ID

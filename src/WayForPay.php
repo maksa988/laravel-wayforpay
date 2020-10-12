@@ -3,10 +3,12 @@
 namespace Maksa988\WayForPay;
 
 use Illuminate\Contracts\Support\Arrayable;
+use InvalidArgumentException;
 use Maksa988\WayForPay\Collection\ProductCollection;
 use Maksa988\WayForPay\Domain\Card;
 use Maksa988\WayForPay\Domain\Languages;
 use Maksa988\WayForPay\Domain\PaymentSystems;
+use Maksa988\WayForPay\Wizard\VerifyWizard;
 use WayForPay\SDK\Credential\AccountSecretCredential;
 use WayForPay\SDK\Credential\AccountSecretTestCredential;
 use WayForPay\SDK\Domain\Client;
@@ -318,6 +320,39 @@ class WayForPay
             ->setComment($comment)
             ->getRequest()
             ->send();
+    }
+
+    /**
+     * @param string $order_id
+     * @param Client $client
+     * @param Card $card
+     * @param int $amount
+     * @param string $currency
+     * @param null|string $serviceUrl
+     * @return Response\VerifyResponse
+     */
+    public function verify($order_id,
+       Client $client,
+       Card $card,
+       $amount = 0,
+       $currency = "USD",
+       $serviceUrl = null)
+    {
+        $wizard = VerifyWizard::get($this->getCredentials())
+            ->setOrderReference($order_id)
+            ->setAmount($amount)
+            ->setCurrency($currency)
+            ->setMerchantDomainName($this->getMerchantDomain())
+            ->setClient($client)
+            ->setServiceUrl($serviceUrl);
+
+        if($card->isToken()) {
+            throw new InvalidArgumentException("Only cards allowed");
+        } else {
+            $wizard->setCard($card->getCard());
+        }
+
+        return $wizard->getRequest()->send();
     }
 
     /**
